@@ -1,0 +1,40 @@
+build/
+cmake-build-*/
+/CMakeFiles/
+/CMakeCache.txt
+
+# JUCE is now a git submodule in third_party/
+
+# IDE files
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.sdf
+*.opensdf
+*.vcxproj.user
+.DS_Store
+
+# macOS
+.DS_Store
+*.xcodeproj/
+*.xcworkspace/
+
+# Compiled files
+*.o
+*.obj
+*.exe
+*.dll
+*.dylib
+*.so
+*.a
+
+# Temporary files
+*.tmp
+*.log
+
+**/__pycache__/
+vcpkg_installed/
+externals/models/
+VoviousManual.pdf
