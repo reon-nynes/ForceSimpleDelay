@@ -1,0 +1,244 @@
+
+name: Release Force Sample Delay
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            platform: windows-x64
+          - os: macos-15
+            platform: macos-universal
+          - os: ubuntu-22.04
+            platform: linux-x64
+
+    env:
+      ARCHIVE: ForceSampleDelay-${{ matrix.platform }}.zip
+
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Clone JUCE and CLAP dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p externals
+
+          if [[ ! -f externals/JUCE/CMakeLists.txt ]]; then
+            git clone --depth 1 --branch 8.0.12 \
+              https://github.com/juce-framework/JUCE.git \
+              externals/JUCE
+          fi
+
+          if [[ ! -f externals/clap-juce-extensions/CMakeLists.txt ]]; then
+            git clone --depth 1 --recurse-submodules \
+              https://github.com/free-audio/clap-juce-extensions.git \
+              externals/clap-juce-extensions
+          fi
+
+          git -C externals/clap-juce-extensions \
+            submodule update --init --recursive
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            ninja-build zip rsync pkg-config \
+            libasound2-dev libjack-jackd2-dev \
+            ladspa-sdk libcurl4-openssl-dev \
+            libfreetype-dev libfontconfig1-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev \
+            libxext-dev libxinerama-dev libxrandr-dev \
+            libxrender-dev libxi-dev \
+            libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev libegl-dev
+
+      - name: Configure Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cmake -S . -B build `
+            -G "Visual Studio 17 2022" -A x64 `
+            -DJUCE_COPY_PLUGIN_AFTER_BUILD=OFF
+
+      - name: Configure macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          cmake -S . -B build \
+            -G Xcode \
+            "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64" \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
+            -DJUCE_COPY_PLUGIN_AFTER_BUILD=OFF
+
+      - name: Configure Linux
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          cmake -S . -B build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DJUCE_COPY_PLUGIN_AFTER_BUILD=OFF
+
+      - name: Build Windows and Linux
+        if: runner.os != 'macOS'
+        run: >
+          cmake --build build
+          --config Release
+          --parallel 4
+          --target ForceSampleDelay_VST3 ForceSampleDelay_CLAP
+
+      # Building Standalone also builds and embeds the AUv3.
+      - name: Build macOS
+        if: runner.os == 'macOS'
+        run: >
+          cmake --build build
+          --config Release
+          --parallel 4
+          --target ForceSampleDelay_VST3 ForceSampleDelay_CLAP ForceSampleDelay_Standalone
+
+      - name: Package macOS and Linux
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          root="build/ForceSampleDelay_artefacts/Release"
+
+          test -d "$root/VST3"
+          test -d "$root/CLAP"
+
+          mkdir -p dist/VST3 dist/CLAP
+
+          rsync -a "$root/VST3/" dist/VST3/
+          rsync -a "$root/CLAP/" dist/CLAP/
+
+          # Check that both formats contain actual binaries.
+          find dist/VST3 -name '*.vst3' | grep -q .
+          find dist/CLAP -name '*.clap' | grep -q .
+
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            app=$(find "$root/Standalone" \
+              -maxdepth 1 -type d -name '*.app' -print -quit)
+
+            if [[ -z "$app" ]]; then
+              echo "AUv3 containing app not found"
+              exit 1
+            fi
+
+            # The AUv3 extension must be embedded in the app.
+            if ! find "$app/Contents/PlugIns" \
+              -name '*.appex' -print -quit | grep -q .; then
+              echo "Embedded AUv3 extension not found"
+              exit 1
+            fi
+
+            mkdir -p dist/AUv3
+            rsync -a "$app" dist/AUv3/
+
+            # Preserve macOS bundle metadata and symlinks.
+            ditto -c -k --sequesterRsrc \
+              --keepParent dist "$GITHUB_WORKSPACE/$ARCHIVE"
+          else
+            (
+              cd dist
+              zip -qry "$GITHUB_WORKSPACE/$ARCHIVE" .
+            )
+          fi
+
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $root = "build/ForceSampleDelay_artefacts/Release"
+
+          foreach ($format in @("VST3", "CLAP")) {
+            $src = Join-Path $root $format
+
+            if (-not (Test-Path -LiteralPath $src)) {
+              throw "Missing plugin format: $format"
+            }
+
+            $dest = Join-Path dist $format
+            New-Item -ItemType Directory -Force $dest |
+              Out-Null
+
+            Get-ChildItem -LiteralPath $src -Force |
+              ForEach-Object {
+                Copy-Item -LiteralPath $_.FullName `
+                  -Destination $dest -Recurse -Force
+              }
+          }
+
+          $vst = @(Get-ChildItem dist/VST3 -Recurse |
+            Where-Object { $_.Name -like '*.vst3' })
+
+          $clap = @(Get-ChildItem dist/CLAP -Recurse |
+            Where-Object { $_.Name -like '*.clap' })
+
+          if ($vst.Count -eq 0 -or $clap.Count -eq 0) {
+            throw "Missing VST3 or CLAP output"
+          }
+
+          Compress-Archive -Path "dist/*" `
+            -DestinationPath "$env:GITHUB_WORKSPACE/$env:ARCHIVE" `
+            -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform }}
+          path: ${{ env.ARCHIVE }}
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "*-x64"
+          path: packages
+          merge-multiple: true
+
+      - name: Download macOS package
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-universal
+          path: packages
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: packages/*.zip
+          generate_release_notes: true
+          fail_on_unmatched_files: true
