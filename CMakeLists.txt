@@ -25,14 +25,14 @@ endif()
 # ---------------------------
 juce_add_plugin(ForceSampleDelay
     # Company
-    COMPANY_NAME "Nylarte"
+    COMPANY_NAME "Nytera"
     COMPANY_WEBSITE ""
     COMPANY_EMAIL "reon.nynes@gmail.com"
 
     # Bundle / IDs
     # Adjust these if you already have a reverse-DNS you use for Apple code signing.
-    BUNDLE_ID "com.nylarte.ForceSampleDelay"
-    PLUGIN_MANUFACTURER_CODE Nylt
+    BUNDLE_ID "com.nytera.ForceSampleDelay"
+    PLUGIN_MANUFACTURER_CODE Nytr
     PLUGIN_CODE Fspd
 
     # Product
@@ -96,6 +96,6 @@ target_link_libraries(ForceSampleDelay
 
 clap_juce_extensions_plugin(
     TARGET ForceSampleDelay
-    CLAP_ID "com.nylarte.ForceSampleDelay"
+    CLAP_ID "com.nytera.ForceSampleDelay"
     CLAP_FEATURES audio-effect delay
 )
