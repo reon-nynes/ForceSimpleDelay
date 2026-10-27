@@ -7,6 +7,8 @@ ForceSampleDelayPluginAudioProcessor::ForceSampleDelayPluginAudioProcessor()
                       .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
       apvts (*this, nullptr, "PARAMS", createParameterLayout())
 {
+    lookaheadMsValue = apvts.getRawParameterValue ("lookaheadMs");
+    bypassValue = apvts.getRawParameterValue ("bypass");
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout
@@ -22,7 +24,15 @@ ForceSampleDelayPluginAudioProcessor::createParameterLayout()
         0.0f
     ));
 
+    params.push_back (std::make_unique<juce::AudioParameterBool>(
+        juce::ParameterID { "bypass", 1 }, "Bypass", false));
+
     return { params.begin(), params.end() };
+}
+
+juce::AudioProcessorParameter* ForceSampleDelayPluginAudioProcessor::getBypassParameter() const
+{
+    return apvts.getParameter ("bypass");
 }
 
 bool ForceSampleDelayPluginAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -47,10 +57,11 @@ void ForceSampleDelayPluginAudioProcessor::prepareToPlay (double sampleRate, int
 
 void ForceSampleDelayPluginAudioProcessor::updateLatencyFromParam()
 {
-    auto* p = apvts.getRawParameterValue ("lookaheadMs");
-    const float ms = (p != nullptr) ? p->load() : 0.0f;
+    const float ms = lookaheadMsValue->load();
+    const bool bypassed = bypassValue->load() >= 0.5f;
 
-    const int newLatencySamples = juce::jmax (0, (int) std::llround (ms * 0.001 * currentSampleRate));
+    const int newLatencySamples = bypassed ? 0
+        : juce::jmax (0, (int) std::llround (ms * 0.001 * currentSampleRate));
 
     if (newLatencySamples != currentLatencySamples)
     {
@@ -59,11 +70,9 @@ void ForceSampleDelayPluginAudioProcessor::updateLatencyFromParam()
         // Tell the host our latency so it can compensate (PDC).
         setLatencySamples (currentLatencySamples);
 
-        // Buffer size depends on latency, so refresh.
-        ensureDelayBuffers();
-
-        // Keep writePos valid; you can also choose to reset to avoid clicks.
-        writePos %= juce::jmax (1, delayBufferSize);
+        // Discard pending audio when changing delay or entering/leaving bypass.
+        delayBuffer.clear();
+        writePos = 0;
     }
 }
 
@@ -71,9 +80,9 @@ void ForceSampleDelayPluginAudioProcessor::ensureDelayBuffers()
 {
     const int numCh = juce::jmax (1, getTotalNumInputChannels());
 
-    // Need enough room to delay by currentLatencySamples plus block-sized safety.
-    // We can use latency + 1 as minimum. Larger is fine.
-    const int needed = juce::jmax (1, currentLatencySamples + 1);
+    // Reserve the full range so bypass and delay changes do not allocate on the audio thread.
+    const float maxDelayMs = apvts.getParameter ("lookaheadMs")->getNormalisableRange().end;
+    const int needed = juce::jmax (1, (int) std::ceil (maxDelayMs * 0.001 * currentSampleRate) + 1);
 
     if (needed != delayBufferSize || delayBuffer.getNumChannels() != numCh)
     {
@@ -98,9 +107,6 @@ void ForceSampleDelayPluginAudioProcessor::processBlock (juce::AudioBuffer<float
 
     if (currentLatencySamples == 0)
         return; // pass-through
-
-    // Ensure buffer sizes if channels changed, etc.
-    ensureDelayBuffers();
 
     for (int ch = 0; ch < numCh; ++ch)
     {
@@ -141,7 +147,7 @@ juce::AudioProcessorEditor* ForceSampleDelayPluginAudioProcessor::createEditor()
 void ForceSampleDelayPluginAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     juce::MemoryOutputStream mos (destData, true);
-    apvts.state.writeToStream (mos);
+    apvts.copyState().writeToStream (mos);
 }
 
 void ForceSampleDelayPluginAudioProcessor::setStateInformation (const void* data, int sizeInBytes)

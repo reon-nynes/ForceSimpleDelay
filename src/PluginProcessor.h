@@ -15,6 +15,7 @@ public:
     bool isBusesLayoutSupported (const BusesLayout& layouts) const override;
 
     void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
+    juce::AudioProcessorParameter* getBypassParameter() const override;
 
     //==============================================================================
     juce::AudioProcessorEditor* createEditor() override;
@@ -45,6 +46,9 @@ public:
 private:
     void updateLatencyFromParam();
     void ensureDelayBuffers();
+
+    std::atomic<float>* lookaheadMsValue = nullptr;
+    std::atomic<float>* bypassValue = nullptr;
 
     // Delay line state
     juce::AudioBuffer<float> delayBuffer;   // [channels x delayBufferSize]
